@@ -1,0 +1,816 @@
+{
+  "name": "Mira v3 - AI-Powered Project Intelligence Assistant",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        464
+      ],
+      "id": "0fa60eb6-1050-40c8-97ff-07a540aa522c",
+      "name": "Chat Trigger",
+      "webhookId": "08248b07-f983-4672-9359-e2897d4deb7a"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const j = $json;\nconst body = (j.body && typeof j.body === 'object') ? j.body : {};\nconst raw = j.chatInput ?? body.chatInput ?? body.message ?? body.text ?? j.message ?? j.text ?? '';\nconst hex = len => Array.from({ length: len }, () => Math.floor(Math.random() * 16).toString(16)).join('');\nlet source = 'subworkflow';\nif (j.test_id || j.testId) source = 'eval';\nelse if (j.chatInput !== undefined) source = 'chat';\nelse if (j.body) source = 'webhook';\nreturn {\n  json: {\n    chatInput: String(raw),\n    testId: j.testId ?? j.test_id ?? body.test_id ?? 'chat',\n    expected: j.expected ?? '',\n    session_id: String(j.sessionId ?? body.sessionId ?? `exec-${$execution.id}`),\n    source,\n    trace_id: hex(32),\n    received_at: new Date().toISOString(),\n    started_ms: Date.now(),\n  },\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        464
+      ],
+      "id": "b82b0d26-0373-4458-a084-90ad65247f07",
+      "name": "Request Intake"
+    },
+    {
+      "parameters": {
+        "jsCode": "const MAX_LEN = 1000;\nreturn $input.all().map(item => {\n  const j = item.json;\n  let t = String(j.chatInput ?? '');\n  const originalLength = t.length;\n  t = t.normalize('NFKC')\n    .replace(/[\\u200B-\\u200D\\uFEFF]/g, '')\n    .replace(/[\\u201C\\u201D]/g, '\"')\n    .replace(/[\\u2018\\u2019]/g, \"'\")\n    .replace(/\\s+/g, ' ')\n    .trim();\n  const flags = [];\n  if (!t) flags.push('empty');\n  if (t.length > MAX_LEN) { t = t.slice(0, MAX_LEN); flags.push('truncated'); }\n  if (/ignore (all |any )?(previous|prior|above) (instructions|rules)|reveal (your )?system prompt|you are now/i.test(t)) flags.push('possible_prompt_injection');\n  // LangChain prompt templates treat curly braces as variables, so swap them out.\n  t = t.replace(/\\{/g, '(').replace(/\\}/g, ')');\n  return { json: { ...j, chatInput: t, inputFlags: flags, originalLength } };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        464
+      ],
+      "id": "b54d49bd-3a70-4ec9-8704-c6b3b5783b9f",
+      "name": "Input Hygiene"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== CONFIG (edit these two) =====\n// project_timeline.csv only has week numbers, so calendar dates are derived from this assumed Week-1 Monday.\n// 2026-03-30 fits the task board: Sprint 1 due dates (Apr 7-10) fall in Phase 1 = Weeks 1-2.\nconst PROJECT_START_DATE = '2026-03-30';\n// \"Today\" for overdue / upcoming checks. Task board snapshot is mid-April 2026. Set '' to use the real current date.\n// A user can also override in chat, e.g. \"... as of 2026-04-27\".\nconst DEFAULT_AS_OF = '2026-04-20';\n\n// ===== PROJECT DATA (embedded: no Drive / disk needed) =====\n// To change the data, edit the text between the backticks below.\nconst description = `AI Adoption Project Description for ABCDE Ltd.\n\nABCDE Ltd., a mid-sized enterprise specializing in logistics and supply chain solutions, is embarking on an AI adoption initiative to enhance operational efficiency, improve customer experience, and drive data-driven decision-making across the organization. This project will focus on integrating AI-powered tools into core business functions, including demand forecasting, route optimization, inventory management, and customer support. By leveraging machine learning models and natural language processing, the company aims to reduce manual overhead, minimize errors, and uncover actionable insights from historical and real-time data.\n\nThe AI adoption project will be implemented in phases, beginning with a detailed assessment of current workflows and data infrastructure, followed by pilot implementations in targeted departments. Key goals include reducing delivery delays by 15%, lowering operational costs by 10%, and improving service responsiveness. A cross-functional task force comprising data scientists, IT professionals, and business stakeholders will oversee the deployment and ensure alignment with organizational objectives. This strategic move is expected to position ABCDE Ltd. as a technology-forward leader in the logistics industry.`;\n\nconst timelineCsv = `phase,phase_name,start_week,end_week,key_activities,milestones_deliverables\n1,Project Initiation,1,2,\"Define project scope; Form cross-functional team; Initial stakeholder meeting\",\"Project charter signed off; Team structure finalized\"\n2,Current State Analysis,3,4,\"Assess existing processes & systems; Identify data sources & gaps\",\"Current systems audit report; Gap analysis report\"\n3,Use Case Selection,5,6,\"Shortlist priority AI use cases (forecasting, route optimization)\",\"Final list of prioritized use cases with success criteria\"\n4,Pilot Design,7,10,\"Data collection & preparation; Model design and development\",\"Working prototype models; Data pipelines established\"\n5,Pilot Implementation,11,14,\"Deploy AI models in test environments; Monitor performance\",\"Pilot results report; User feedback and performance metrics\"\n6,Evaluation & Iteration,15,16,\"Evaluate pilot outcomes; Adjust models as needed\",\"Updated models and process refinements\"\n7,Full Deployment,17,22,\"Scale AI models across selected departments; Train staff\",\"Full production rollout; Training sessions completed\"\n8,Monitoring & Review,23,24,\"Continuous performance monitoring; Final project review\",\"Project closure report; Recommendations for future scaling\"`;\n\nconst risksCsv = `risk_id,category,risk_challenge,impact,mitigation_strategy\nR01,Data Quality & Availability,Incomplete or unstructured data,Poor model performance and inaccurate outcomes,Perform early data audits and implement robust data governance\nR02,Integration Issues,Difficulty integrating AI with legacy systems,Delays in deployment and operational disruptions,Plan integration roadmap and use APIs/middleware\nR03,Talent & Skills Gap,Lack of internal AI/ML expertise,Overreliance on external vendors and slow progress,Provide staff training and hire specialized talent\nR04,Change Resistance,Employees resist adopting AI-driven workflows,Low adoption and reduced ROI,Strong change management and early engagement\nR05,Ethical & Legal Concerns,Risks of biased models or data privacy violations,Legal repercussions and reputational damage,Involve legal early and implement fairness checks\nR06,Cost Overruns,Underestimation of AI development costs,Budget constraints and project delays,Set realistic budget and build in contingency funds\nR07,Unrealistic Expectations,Stakeholders expect immediate ROI,Disillusionment and loss of support,Align expectations and show quick wins\nR08,Model Performance Drift,AI models lose accuracy over time,Incorrect decisions and trust erosion,Regular retraining cycles and monitoring dashboards\nR09,Security Vulnerabilities,AI models targeted by adversarial attacks,Data breaches and operational risks,Adopt AI security best practices and penetration testing\nR10,Vendor Lock-in,Overdependence on a specific AI platform,Flexibility loss and future switching costs,Favor open standards and negotiate flexible vendor terms`;\n\nconst taskCsv = `task_id,task_name,status,assignee,priority,sprint,due_date,labels,description\nT001,Define project scope and objectives,Done,Arjun Mehta,High,Sprint 1,2026-04-07,Planning,\"Document project scope, goals, and success criteria for AI adoption\"\nT002,Form cross-functional task force,Done,Sarah Lin,High,Sprint 1,2026-04-07,Planning,\"Identify and onboard team members from data science, IT, and business units\"\nT003,Initial stakeholder alignment meeting,Done,Arjun Mehta,High,Sprint 1,2026-04-10,Planning,\"Present project charter and get sign-off from leadership\"\nT004,Audit existing data infrastructure,Done,Priya Nair,High,Sprint 2,2026-04-18,Analysis,\"Assess current databases, data pipelines, and data quality\"\nT005,Map current logistics workflows,Done,James Wong,Medium,Sprint 2,2026-04-18,Analysis,\"Document end-to-end processes for demand forecasting, routing, and inventory\"\nT006,Identify data gaps and quality issues,In Progress,Priya Nair,High,Sprint 2,2026-04-21,Analysis,\"Gap analysis report comparing available data vs requirements for AI models\"\nT007,Shortlist AI use cases,In Progress,Arjun Mehta,High,Sprint 3,2026-04-28,Use Cases,\"Evaluate and prioritize: demand forecasting, route optimization, inventory mgmt, customer support\"\nT008,Define success criteria for each use case,To Do,Sarah Lin,High,Sprint 3,2026-05-02,Use Cases,\"Set measurable KPIs: 15% reduction in delivery delays, 10% cost reduction\"\nT009,Vendor evaluation for ML platform,To Do,James Wong,Medium,Sprint 3,2026-05-05,Use Cases,\"Compare cloud ML platforms (AWS SageMaker, Azure ML, GCP Vertex AI)\"\nT010,Collect historical demand data,To Do,Priya Nair,High,Sprint 4,2026-05-12,Data Prep,\"Extract 2 years of demand data from ERP system\"\nT011,Data cleaning and preprocessing pipeline,To Do,Priya Nair,High,Sprint 4,2026-05-19,Data Prep,\"Build automated pipeline for data cleaning, normalization, feature engineering\"\nT012,Design demand forecasting model,To Do,Ravi Kumar,High,Sprint 4,2026-05-19,Model Dev,\"Select algorithm (LSTM, Prophet, XGBoost), define input features\"\nT013,Design route optimization model,To Do,Ravi Kumar,Medium,Sprint 5,2026-05-26,Model Dev,\"Graph-based optimization with constraints (time windows, vehicle capacity)\"\nT014,Build model training pipeline,To Do,Ravi Kumar,High,Sprint 5,2026-06-02,Model Dev,\"Automated training, validation, and model versioning\"\nT015,Deploy demand model to test environment,To Do,James Wong,High,Sprint 6,2026-06-09,Pilot,\"Deploy to staging, set up monitoring, define test scenarios\"\nT016,Run pilot with logistics team,To Do,Arjun Mehta,High,Sprint 6,2026-06-16,Pilot,\"2-week pilot with 3 logistics coordinators using demand forecasting predictions\"\nT017,Collect pilot feedback and metrics,To Do,Sarah Lin,High,Sprint 7,2026-06-23,Evaluation,\"Survey users, measure prediction accuracy, compare with manual forecasts\"\nT018,Iterate on model based on feedback,To Do,Ravi Kumar,Medium,Sprint 7,2026-06-30,Evaluation,\"Adjust features, retrain model, validate improvements\"\nT019,Prepare production deployment plan,To Do,James Wong,High,Sprint 8,2026-07-07,Deployment,\"Infrastructure scaling, rollback plan, monitoring setup\"\nT020,Staff training program,To Do,Sarah Lin,Medium,Sprint 8,2026-07-14,Deployment,\"Train 25 logistics staff on using AI-powered forecasting dashboard\"\nT021,Full production rollout,To Do,Arjun Mehta,High,Sprint 9,2026-07-21,Deployment,\"Go-live for demand forecasting across all 3 distribution centers\"\nT022,Set up continuous monitoring,To Do,Priya Nair,High,Sprint 9,2026-07-28,Monitoring,\"Model performance dashboards, drift detection alerts, retraining triggers\"\nT023,Project closure report,To Do,Arjun Mehta,Medium,Sprint 10,2026-08-04,Monitoring,\"Final report: outcomes vs targets, lessons learned, recommendations for Phase 2\"\nT024,Security review of AI infrastructure,Blocked,James Wong,High,Sprint 5,2026-05-26,Security,\"Penetration testing and vulnerability assessment - BLOCKED: waiting for security team availability\"\nT025,Legal review of data usage,In Progress,Sarah Lin,High,Sprint 3,2026-04-28,Compliance,\"Review data privacy compliance for using customer delivery data in ML models\"`;\n\n\nfunction parseCSV(text) {\n  const rows = []; let row = [], cur = '', q = false;\n  text = text.replace(/^\\uFEFF/, '');\n  for (let i = 0; i < text.length; i++) {\n    const c = text[i];\n    if (q) { if (c === '\"') { if (text[i+1] === '\"') { cur += '\"'; i++; } else q = false; } else cur += c; }\n    else if (c === '\"') q = true;\n    else if (c === ',') { row.push(cur); cur = ''; }\n    else if (c === '\\n' || c === '\\r') { if (c === '\\r' && text[i+1] === '\\n') i++; row.push(cur); cur = ''; if (row.some(x => x.trim() !== '')) rows.push(row); row = []; }\n    else cur += c;\n  }\n  if (cur !== '' || row.length) { row.push(cur); if (row.some(x => x.trim() !== '')) rows.push(row); }\n  if (!rows.length) return [];\n  const h = rows[0].map(x => x.trim());\n  return rows.slice(1).map(r => { const o = {}; h.forEach((k, j) => o[k] = (r[j] || '').trim()); return o; });\n}\n\nconst tasks = parseCSV(taskCsv);\nconst timelineRows = parseCSV(timelineCsv);\nconst inputs = $('Input Hygiene').all();\nconst addDays = (d, n) => new Date(d.getTime() + n * 86400000);\nconst iso = d => d.toISOString().slice(0, 10);\nconst start0 = new Date(PROJECT_START_DATE + 'T00:00:00Z');\n\nfunction datedTimeline(asOf) {\n  if (!timelineRows.length) return null;\n  const a14 = iso(addDays(new Date(asOf + 'T00:00:00Z'), 14));\n  const phases = timelineRows.map(r => {\n    const sw = parseInt(r.start_week, 10), ew = parseInt(r.end_week, 10);\n    const ds = iso(addDays(start0, (sw - 1) * 7)), de = iso(addDays(start0, ew * 7 - 1));\n    return { phase: r.phase, name: r.phase_name, weeks: 'Week ' + sw + '-' + ew, derivedStart: ds, derivedEnd: de,\n      keyActivities: r.key_activities, milestonesDeliverables: r.milestones_deliverables,\n      statusAtAsOfDate: de < asOf ? 'ended' : (ds > asOf ? 'not started' : 'in progress') };\n  });\n  return {\n    note: 'Calendar dates are DERIVED from an assumed Week-1 start of ' + PROJECT_START_DATE + '; the CSV itself only has week numbers.',\n    phases,\n    currentPhase: phases.find(p => p.statusAtAsOfDate === 'in progress') || null,\n    milestonesDueNext14Days: phases.filter(p => p.derivedEnd >= asOf && p.derivedEnd <= a14)\n      .map(p => ({ phase: p.name, derivedDueDate: p.derivedEnd, milestonesDeliverables: p.milestonesDeliverables }))\n  };\n}\n\nfunction computeStats(rows, asOf) {\n  if (!rows.length) return null;\n  const keys = Object.keys(rows[0]);\n  const fk = re => keys.find(k => re.test(k)) || null;\n  const K = {\n    status: fk(/status/i), due: fk(/due/i), id: fk(/^(task[ _-]?)?id$/i),\n    name: fk(/^(task[ _-]?)?(name|title)$|^task$|summary/i), sprint: fk(/sprint/i),\n    assignee: fk(/assign|owner/i), priority: fk(/priorit/i), description: fk(/descr/i), labels: fk(/label/i)\n  };\n  const cat = s => { s = (s || '').toLowerCase().replace(/[_-]/g, ' ');\n    if (/done|complete|closed/.test(s)) return 'Done';\n    if (/block/.test(s)) return 'Blocked';\n    if (/progress|doing/.test(s)) return 'In Progress';\n    return 'To Do'; };\n  const asOfD = new Date(asOf + 'T00:00:00Z');\n  const in14 = addDays(asOfD, 14);\n  const g = (r, k) => (k ? r[k] : '');\n  const slim = r => ({ id: g(r, K.id), name: g(r, K.name), status: g(r, K.status), sprint: g(r, K.sprint), assignee: g(r, K.assignee), priority: g(r, K.priority), labels: g(r, K.labels), due: g(r, K.due) });\n  const counts = { Done: 0, 'In Progress': 0, Blocked: 0, 'To Do': 0 };\n  const bySprint = {};\n  const blocked = [], inProgress = [], overdue = [], dueWithin14Days = [];\n  for (const r of rows) {\n    const c = cat(g(r, K.status));\n    counts[c]++;\n    const sp = K.sprint ? (r[K.sprint] || 'Unassigned') : 'n/a';\n    bySprint[sp] = bySprint[sp] || { Done: 0, 'In Progress': 0, Blocked: 0, 'To Do': 0 };\n    bySprint[sp][c]++;\n    if (c === 'Blocked') blocked.push(Object.assign(slim(r), { blockerNote: g(r, K.description) }));\n    if (c === 'In Progress') inProgress.push(slim(r));\n    if (c !== 'Done' && K.due && r[K.due]) {\n      const d = new Date(r[K.due] + 'T00:00:00Z');\n      if (!isNaN(d)) {\n        if (d < asOfD) overdue.push(slim(r));\n        else if (d <= in14) dueWithin14Days.push(slim(r));\n      }\n    }\n  }\n  return { detectedColumns: K, total: rows.length, counts, bySprint, blocked, inProgress, overdue, dueWithin14Days };\n}\n\nconst out = [];\nfor (let i = 0; i < inputs.length; i++) {\n  const inp = inputs[i].json;\n  const m = (inp.chatInput || '').match(/as of (\\d{4}-\\d{2}-\\d{2})/i);\n  const asOf = m ? m[1] : (DEFAULT_AS_OF || new Date().toISOString().slice(0, 10));\n  const dataSummary = [\n    'project_description.txt: ' + (description ? 'loaded' : 'MISSING'),\n    'project_timeline.csv: ' + (timelineRows.length ? timelineRows.length + ' phases' : 'MISSING'),\n    'project_risks.csv: ' + (risksCsv ? 'loaded' : 'MISSING'),\n    'sample_task_board.csv: ' + (tasks.length ? tasks.length + ' tasks' : 'MISSING')\n  ].join('; ');\n  out.push({ json: {\n    chatInput: inp.chatInput, testId: inp.testId || 'chat', expected: inp.expected || '',\n    trace_id: inp.trace_id || null, session_id: inp.session_id || null, source: inp.source || 'chat', inputFlags: inp.inputFlags || [],\n    asOf, dataSummary, startedAt: inp.started_ms || Date.now(),\n    hasData: !!(description || timelineRows.length || risksCsv || tasks.length),\n    ctx: { description, timelineCsv, risksCsv, tasks, stats: computeStats(tasks, asOf), dated: datedTimeline(asOf) }\n  }});\n}\nreturn out;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        464
+      ],
+      "id": "4c15c61e-6c7a-4192-bdda-52a6e0ec6270",
+      "name": "Build Context (ingest + stats)"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=AVAILABLE DATA: {{ $json.dataSummary }}\nUSER REQUEST: {{ $json.chatInput }}\n\nClassify the request above and return the JSON object.",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are the Orchestrator of Mira, a project-intelligence assistant for PMs and TPMs. Your only job is to classify the user's request so it can be routed to the right specialist agent.\n\nOUTPUT FORMAT\nReply with exactly one JSON object and nothing else: no explanation, no markdown, no code fences. Use lowercase true/false for booleans and unquoted null for empty values. The object has five keys: intent, uses_provided_data, sprint, audience, reason.\n\nKEY RULES\nintent: exactly one of the following.\n- plan: the user wants a project plan.\n- risk: the user wants a risk assessment or the top risks.\n- status: the user wants a weekly status report, or a summary of tasks done, in progress, to do or blocked.\n- milestone: the user asks about upcoming milestones, blocked, at-risk or overdue tasks, or deadlines.\n- stakeholder: the user wants an update email or communication for an audience.\n- clarify: anything else, a greeting, or a request that is unclear.\n\nuses_provided_data: true when the request concerns the ABCDE Ltd AI Adoption Project, the sample task board, sprints, tasks, milestones, blockers or the provided files. Any request that names the ABCDE Ltd project always counts as true. This includes general questions about the project's tasks, milestones or blockers. false when the user supplies their own thin description instead (for example \"We want to build a chatbot\", \"New project starting soon\", \"a 2-week project with no other details\"), or makes only an unsupported claim (for example \"Things are going fine\").\n\nsprint: the sprint number as a string (for example \"2\") if the user names one, otherwise null.\n\naudience: leadership, engineering or client if the user states one. For an email with no stated audience use client. Otherwise null.\n\nreason: a short phrase of at most 12 words explaining your choice.\n\nEXAMPLE\nFor \"Generate a project plan for the AI Adoption Project at ABCDE Ltd\" the values are: intent plan, uses_provided_data true, sprint null, audience null, reason a short phrase."
+            }
+          ]
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        880,
+        464
+      ],
+      "id": "8319ad68-69b3-4769-817c-60b35e9fa03a",
+      "name": "Orchestrator (Router)"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o-mini"
+        },
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        880,
+        672
+      ],
+      "id": "b63aef7b-348c-4425-a9ac-b5334d12fa1c",
+      "name": "Router Model",
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "",
+          "__aiGatewayManaged": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const base = $('Build Context (ingest + stats)').all()[$itemIndex].json;\n\n// 1. Read the router's JSON reply (tolerates code fences and extra words)\nconst raw = String($json.text || '').replace(/```json|```/g, '').trim();\nlet r = {};\ntry { r = JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1)); } catch (e) { r = { intent: 'clarify' }; }\nconst valid = ['plan', 'risk', 'status', 'milestone', 'stakeholder', 'clarify'];\nif (!valid.includes(r.intent)) r.intent = 'clarify';\n\n// 2. Decide whether this request is about the provided project data\nconst c = base.ctx;\nconst routerSaysData = r.uses_provided_data === true || String(r.uses_provided_data).toLowerCase() === 'true';\nconst namesProject = /abcde|sample task board|task board|provided (project )?description|risk data|project timeline/i.test(base.chatInput || '');\nconst useData = (routerSaysData || (namesProject && r.intent !== 'clarify')) && base.hasData;\n\n// 3. Sprint filter\nconst sprintNum = r.sprint ? String(r.sprint).replace(/\\D/g, '') : '';\nconst K = c.stats ? c.stats.detectedColumns : {};\nlet rows = c.tasks;\nif (sprintNum && K.sprint) rows = rows.filter(t => String(t[K.sprint]).replace(/\\D/g, '') === sprintNum);\nconst sprintKey = sprintNum && c.stats ? Object.keys(c.stats.bySprint).find(k => k.replace(/\\D/g, '') === sprintNum) : null;\n\nconst renderRows = (list) => list.length\n  ? Object.keys(list[0]).join(' | ') + '\\n' + list.map(t => Object.values(t).join(' | ')).join('\\n')\n  : '(no rows)';\nconst J = o => JSON.stringify(o, null, 1);\n\n// 4. Build the data block for the chosen agent\nlet block;\nif (!useData) {\n  block = 'PROJECT DATA: NO PROJECT DATA ATTACHED. Only the user\\'s own words above are available.';\n} else {\n  const parts = ['PROJECT DATA (as-of date ' + base.asOf + ')'];\n  if (r.intent === 'plan') {\n    parts.push('--- project_description.txt ---\\n' + c.description);\n    parts.push('--- project_timeline.csv (columns: phase, phase_name, start_week, end_week, key_activities, milestones_deliverables; timing is in WEEKS, total 24 weeks) ---\\n' + c.timelineCsv);\n  } else if (r.intent === 'risk') {\n    parts.push('--- project_description.txt ---\\n' + c.description);\n    parts.push('--- project_risks.csv (no likelihood/severity/rank columns exist) ---\\n' + c.risksCsv);\n    if (c.stats) parts.push('--- BOARD EVIDENCE (for prioritising / linking risks) ---\\nBlocked tasks:\\n' + J(c.stats.blocked) + '\\nIn-progress tasks:\\n' + J(c.stats.inProgress));\n    if (c.dated && c.dated.currentPhase) parts.push('--- CURRENT PHASE at as-of date ---\\n' + J(c.dated.currentPhase));\n  } else if (r.intent === 'stakeholder') {\n    parts.push('Requested sprint filter: ' + (sprintNum ? 'Sprint ' + sprintNum + ' ONLY' : 'none'));\n    parts.push('--- project_description.txt ---\\n' + c.description);\n    parts.push('--- TASKS IN SCOPE (already filtered; nothing outside this list may be mentioned) ---\\n' + renderRows(rows));\n    if (sprintKey) parts.push('--- Pre-computed counts for ' + sprintKey + ' ---\\n' + J(c.stats.bySprint[sprintKey]));\n  } else {\n    // status and milestone\n    parts.push('Requested sprint filter: ' + (sprintNum ? 'Sprint ' + sprintNum : 'none (whole board)'));\n    parts.push('--- PRE-COMPUTED WHOLE-BOARD STATISTICS (authoritative) ---\\n' + (c.stats ? J({ total: c.stats.total, counts: c.stats.counts, blocked: c.stats.blocked, overdue: c.stats.overdue, dueWithin14Days: c.stats.dueWithin14Days }) : '(no task board loaded)'));\n    if (sprintKey) parts.push('--- PRE-COMPUTED COUNTS FOR ' + sprintKey.toUpperCase() + ' (use these for the summary table) ---\\n' + J(c.stats.bySprint[sprintKey]));\n    parts.push('--- TASKS IN SCOPE ---\\n' + renderRows(rows));\n    if (c.dated) parts.push('--- TIMELINE WITH DERIVED DATES ---\\n' + J(c.dated));\n  }\n  block = parts.join('\\n\\n');\n}\n\n// 5. Output\nreturn { json: {\n  intent: r.intent, uses_provided_data: useData, sprint: sprintNum || null,\n  audience: r.audience || null, reason: r.reason || '',\n  chatInput: base.chatInput, testId: base.testId, expected: base.expected,\n  trace_id: base.trace_id, session_id: base.session_id, source: base.source, inputFlags: base.inputFlags,\n  asOf: base.asOf, startedAt: base.startedAt, contextBlock: block\n}};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        128
+      ],
+      "id": "000bd690-207a-4c4e-9f76-669ef2d438f1",
+      "name": "Parse Router Output"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "b16b58bb-72de-4798-ab48-d437b65ea7e0",
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "plan",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "plan"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "2a6eaf24-f816-49c5-8308-67db3a22e9ee",
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "risk",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "risk"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "bfcfd837-daed-4085-b9ef-89fe118abe00",
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "status",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "status"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "83e02cbb-7d32-4e9c-89b8-6fc31ae16863",
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "milestone",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "milestone"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "0bb3e813-a0e2-4515-a8be-4a5a9ece118b",
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "stakeholder",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "stakeholder"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "3cbd5e77-09e0-4e7e-ab06-66a2c03ecfa7",
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "clarify",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "clarify"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1328,
+        464
+      ],
+      "id": "703f815a-7437-43fc-ba79-ead4a7d562f3",
+      "name": "Route by Intent"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o-mini"
+        },
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        1712,
+        1024
+      ],
+      "id": "4325a486-6895-444b-88cf-7a0ba8888276",
+      "name": "Agent Model",
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "",
+          "__aiGatewayManaged": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=AS-OF DATE: {{ $json.asOf }}\nUSER REQUEST: {{ $json.chatInput }}\n\n{{ $json.contextBlock }}",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "ROLE: Planner Agent for the ABCDE Ltd AI Adoption Project.\n\nGROUNDING RULES (mandatory)\n1. Use ONLY facts in the PROJECT DATA block. Never invent goals, phases, milestones, risks, tasks, owners, dates, counts or percentages.\n2. Quote IDs and names exactly as they appear. Use the pre-computed counts and lists verbatim and do not recount.\n3. If a field is missing, write: Not specified in data.\n4. If the block says NO PROJECT DATA ATTACHED, work only from the user's own words. Judge whether they gave enough detail. If not, do NOT produce the deliverable. Reply with a short \"More information needed\" message stating what is missing and asking specific questions. Never fill gaps with assumptions or generic templates.\n5. Use clear Markdown and a professional tone. Be concise.\n\nTASK, WITH PROJECT DATA\nProduce:\n(a) Project summary: 2-3 lines, from the description only.\n(b) Goals exactly as stated in the description. Quote the figures it gives and add none.\n(c) Phase table with columns Phase | Weeks | Key activities | Milestones / deliverables, built row by row from project_timeline.csv in phase order. Timing is in weeks, so do not state calendar dates.\n(d) Delivery approach exactly as described: phased, assessment first, then pilots in targeted departments, with a cross-functional task force.\n(e) Open questions: only things genuinely unspecified in the files, for example budget or named owners.\nDo not add goals, phases, activities or deliverables that are not in the files.\n\nTASK, WITHOUT PROJECT DATA\nA plan needs scope and goals, a timeline or duration, team size and roles, and deliverables or success criteria. A one-sentence idea or a bare duration is not enough. Say so, list what is missing, and ask for scope, goals, deliverables, timeline and team size. Do NOT output a plan or phases."
+            }
+          ]
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        1568,
+        272
+      ],
+      "id": "7d464485-b0b3-4840-9a0b-60cd60bd3934",
+      "name": "Planner Agent"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=AS-OF DATE: {{ $json.asOf }}\nUSER REQUEST: {{ $json.chatInput }}\n\n{{ $json.contextBlock }}",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "ROLE: Risk Assessor Agent for the ABCDE Ltd AI Adoption Project.\n\nGROUNDING RULES (mandatory)\n1. Use ONLY facts in the PROJECT DATA block. Never invent goals, phases, milestones, risks, tasks, owners, dates, counts or percentages.\n2. Quote IDs and names exactly as they appear. Use the pre-computed counts and lists verbatim and do not recount.\n3. If a field is missing, write: Not specified in data.\n4. If the block says NO PROJECT DATA ATTACHED, work only from the user's own words. Judge whether they gave enough detail. If not, do NOT produce the deliverable. Reply with a short \"More information needed\" message stating what is missing and asking specific questions. Never fill gaps with assumptions or generic templates.\n5. Use clear Markdown and a professional tone. Be concise.\n\nTASK, WITH PROJECT DATA\nUse ONLY the risks present in project_risks.csv (IDs R01 to R10). Never add generic or extra risks, and never invent likelihood, severity or scores. The CSV has none.\n- Full assessment: output a matrix grouped by category with columns ID | Category | Risk | Impact | Mitigation, copied faithfully from the CSV. Add a final column \"Related board evidence\" only where a task in BOARD EVIDENCE clearly relates, citing its task ID. Otherwise write a dash.\n- Top N request: the CSV has no ranking, so rank using BOARD EVIDENCE (blocked and in-progress tasks and their labels) and the CURRENT PHASE. State your criterion in one line. For each risk give the R-ID, category, risk, impact and mitigation, and cite the supporting task IDs. Return exactly N risks.\n\nTASK, WITHOUT PROJECT DATA\nSay there is not enough information. Ask for the project description, scope, timeline, team, technology and data involved. List NO risks."
+            }
+          ]
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        1568,
+        432
+      ],
+      "id": "31ea12bf-65f6-4799-ae4a-a76f5397b6b7",
+      "name": "Risk Assessor Agent"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=AS-OF DATE: {{ $json.asOf }}\nUSER REQUEST: {{ $json.chatInput }}\n\n{{ $json.contextBlock }}",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "ROLE: Status Reporter Agent for the ABCDE Ltd AI Adoption Project.\n\nGROUNDING RULES (mandatory)\n1. Use ONLY facts in the PROJECT DATA block. Never invent goals, phases, milestones, risks, tasks, owners, dates, counts or percentages.\n2. Quote IDs and names exactly as they appear. Use the pre-computed counts and lists verbatim and do not recount.\n3. If a field is missing, write: Not specified in data.\n4. If the block says NO PROJECT DATA ATTACHED, work only from the user's own words. Judge whether they gave enough detail. If not, do NOT produce the deliverable. Reply with a short \"More information needed\" message stating what is missing and asking specific questions. Never fill gaps with assumptions or generic templates.\n5. Use clear Markdown and a professional tone. Be concise.\n\nTASK, WITH TASK DATA\nProduce a weekly status report with these parts:\n- Header: project, sprint filter, as-of date.\n- Overall health: Green, Amber or Red, with a one-line justification based strictly on the blocked list, the overdue list and the counts.\n- Summary table: Done, In Progress, Blocked, To Do, Total. If a sprint filter is set, the table and the sections cover THAT SPRINT ONLY, using the pre-computed sprint counts, and you add one line with the whole-board counts. Otherwise use the whole-board counts.\n- Sections: Completed, In progress, Blocked (include the blocker note), To do, Upcoming (tasks due within 14 days, plus milestones due in the next 14 days from the timeline).\n- Blockers and asks.\nList real task IDs and names. Do not give percentages unless they are derived directly from the pre-computed counts. If you quote a derived milestone date, say it is derived from the assumed project start date.\n\nTASK, WITHOUT TASK DATA\nState exactly: No task data available. Ask the user to share the task board export or sprint details. Do NOT give any statuses, percentages, task names or health rating."
+            }
+          ]
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        1568,
+        592
+      ],
+      "id": "bee56a49-f5ed-4342-8fba-e0159d68faeb",
+      "name": "Status Reporter Agent"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=AS-OF DATE: {{ $json.asOf }}\nUSER REQUEST: {{ $json.chatInput }}\n\n{{ $json.contextBlock }}",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "ROLE: Milestone Tracker Agent for the ABCDE Ltd AI Adoption Project.\n\nGROUNDING RULES (mandatory)\n1. Use ONLY facts in the PROJECT DATA block. Never invent goals, phases, milestones, risks, tasks, owners, dates, counts or percentages.\n2. Quote IDs and names exactly as they appear. Use the pre-computed counts and lists verbatim and do not recount.\n3. If a field is missing, write: Not specified in data.\n4. If the block says NO PROJECT DATA ATTACHED, work only from the user's own words. Judge whether they gave enough detail. If not, do NOT produce the deliverable. Reply with a short \"More information needed\" message stating what is missing and asking specific questions. Never fill gaps with assumptions or generic templates.\n5. Use clear Markdown and a professional tone. Be concise.\n\nTASK\nCompare the timeline and the task board as of the as-of date. Output these sections:\n1) Blocked tasks.\n2) Overdue tasks (due before the as-of date and not Done).\n3) Tasks due within the next 14 days and not Done. Flag In Progress ones close to their due date as at risk.\n4) Milestones due in the next 14 days, taken from milestonesDueNext14Days in the timeline. If none, say so and never invent any. Say that these dates are derived from the assumed project start date.\nFor each flagged task give: ID, name, status, due date, reason flagged (use the blocker note when present), suggested action.\nFinish with a one-paragraph at-risk verdict."
+            }
+          ]
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        1568,
+        752
+      ],
+      "id": "95ddc01c-7ee9-41ee-934e-307ec47a8e14",
+      "name": "Milestone Tracker Agent"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=AS-OF DATE: {{ $json.asOf }}\nUSER REQUEST: {{ $json.chatInput }}\nAUDIENCE (if any): {{ $json.audience }}\n\n{{ $json.contextBlock }}",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "ROLE: Stakeholder Update Agent for the ABCDE Ltd AI Adoption Project.\n\nGROUNDING RULES (mandatory)\n1. Use ONLY facts in the PROJECT DATA block. Never invent goals, phases, milestones, risks, tasks, owners, dates, counts or percentages.\n2. Quote IDs and names exactly as they appear. Use the pre-computed counts and lists verbatim and do not recount.\n3. If a field is missing, write: Not specified in data.\n4. If the block says NO PROJECT DATA ATTACHED, work only from the user's own words. Judge whether they gave enough detail. If not, do NOT produce the deliverable. Reply with a short \"More information needed\" message stating what is missing and asking specific questions. Never fill gaps with assumptions or generic templates.\n5. Use clear Markdown and a professional tone. Be concise.\n\nTASK\nWrite the update for the requested audience. Default to a client email. For leadership, focus on outcomes, risks and decisions. For engineering, give task-level detail.\nFor an email include: Subject, greeting, summary, completed work, in-progress work, risks and blockers, next steps, and the sign-off \"Nexora Project Team\".\nUse ONLY the tasks listed under TASKS IN SCOPE and the counts given. Never mention tasks or sprints outside that list, and never invent metrics.\nKeep next steps to what the in-scope tasks support, for example finishing the in-progress task. Otherwise write \"to be confirmed in the next update\".\nIf no tasks are in scope, say you cannot write the update and ask for data."
+            }
+          ]
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        1568,
+        912
+      ],
+      "id": "94fe0ed0-8ec4-4ffb-a7c8-9a037a85c692",
+      "name": "Stakeholder Update Agent"
+    },
+    {
+      "parameters": {
+        "jsCode": "return { json: { text: \"Hi, I'm Mira. I can help with:\\n- **Project plans** (from a project description and timeline)\\n- **Risk assessments** (categorized risk matrix and top risks)\\n- **Weekly status reports** (from the task board)\\n- **Milestone / blocker alerts** (what is blocked, overdue or due soon)\\n- **Stakeholder updates** (email for leadership, engineering or client)\\n\\nTell me which one you need, and which project or sprint it is for.\" } };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1568,
+        1088
+      ],
+      "id": "0b97e7c1-911d-47c8-90c8-7f16a12473e6",
+      "name": "Clarify Reply"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Finalize + Build Trace (OpenTelemetry version for Langfuse)\n// Mode: Run Once for Each Item\nlet meta;\ntry { meta = $('Parse Router Output').item.json; } catch (e) { meta = $('Parse Router Output').first().json; }\n\nconst agentNames = { plan: 'Planner Agent', risk: 'Risk Assessor Agent', status: 'Status Reporter Agent', milestone: 'Milestone Tracker Agent', stakeholder: 'Stakeholder Update Agent', clarify: 'Orchestrator' };\nconst agent = agentNames[meta.intent] || 'Orchestrator';\n\n// ---- Final answer, with a review footer on drafts that may be shared with others ----\nlet text = String($json.text || '').trim();\nif (['plan', 'risk', 'stakeholder'].includes(meta.intent)) {\n  text += '\\n\\n---\\n_Generated by Mira (' + agent + '). Draft for PM/TPM review before sharing with stakeholders._';\n}\n\n// ---- OpenTelemetry (OTLP/JSON) payload for Langfuse ----\nconst hex = len => Array.from({ length: len }, () => Math.floor(Math.random() * 16).toString(16)).join('');\nconst nowMs = Date.now();\nconst startMs = Number(meta.startedAt) || nowMs;\nconst nano = ms => String(Math.round(ms)) + '000000'; // milliseconds to nanoseconds, without BigInt\nconst sv = (k, v) => ({ key: k, value: { stringValue: String(v ?? '') } });\n\nconst traceId = (meta.trace_id && /^[0-9a-f]{32}$/.test(meta.trace_id)) ? meta.trace_id : hex(32);\nconst rootId = hex(16);\nconst genId = hex(16);\nconst estIn = Math.round(((meta.contextBlock || '').length + (meta.chatInput || '').length) / 4);\nconst estOut = Math.round(text.length / 4);\n\nconst rootAttrs = [\n  sv('langfuse.trace.name', 'mira-run'),\n  sv('langfuse.session.id', meta.session_id || ''),\n  { key: 'langfuse.trace.tags', value: { arrayValue: { values: [sv('', meta.intent).value, sv('', meta.source || 'chat').value] } } },\n  sv('langfuse.trace.input', meta.chatInput),\n  sv('langfuse.trace.output', text),\n  sv('langfuse.observation.input', meta.chatInput),\n  sv('langfuse.observation.output', text),\n  sv('langfuse.trace.metadata.intent', meta.intent),\n  sv('langfuse.trace.metadata.agent', agent),\n  sv('langfuse.trace.metadata.uses_provided_data', meta.uses_provided_data),\n  sv('langfuse.trace.metadata.sprint', meta.sprint || ''),\n  sv('langfuse.trace.metadata.as_of', meta.asOf),\n  sv('langfuse.trace.metadata.testId', meta.testId),\n  sv('langfuse.trace.metadata.input_flags', JSON.stringify(meta.inputFlags || [])),\n  sv('langfuse.trace.metadata.latency_ms', nowMs - startMs)\n];\nconst genAttrs = [\n  sv('langfuse.observation.type', 'generation'),\n  sv('gen_ai.request.model', 'gpt-4o-mini'),\n  sv('langfuse.observation.input', meta.contextBlock),\n  sv('langfuse.observation.output', text),\n  sv('langfuse.observation.usage_details', JSON.stringify({ input: estIn, output: estOut })),\n  sv('langfuse.observation.metadata.token_counts_are_estimates', 'true')\n];\n\nconst otel = { resourceSpans: [{\n  resource: { attributes: [sv('service.name', 'mira-n8n')] },\n  scopeSpans: [{ scope: { name: 'mira' }, spans: [\n    { traceId, spanId: rootId, name: 'mira-run', kind: 1, startTimeUnixNano: nano(startMs), endTimeUnixNano: nano(nowMs), attributes: rootAttrs, status: { code: 1 } },\n    { traceId, spanId: genId, parentSpanId: rootId, name: agent, kind: 1, startTimeUnixNano: nano(startMs), endTimeUnixNano: nano(nowMs), attributes: genAttrs, status: { code: 1 } }\n  ] }]\n}] };\n\nreturn { json: {\n  output: text, intent: meta.intent, agent, testId: meta.testId, input: meta.chatInput,\n  expected: meta.expected, latencyMs: nowMs - startMs, otel\n}};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1904,
+        560
+      ],
+      "id": "62b7aa0e-5f83-40b8-9d51-7f21db681166",
+      "name": "Finalize + Build Trace"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://cloud.langfuse.com/api/public/otel/v1/traces",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-langfuse-ingestion-version",
+              "value": "4"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.otel) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2128,
+        560
+      ],
+      "id": "b3ffbedc-2e11-4657-beff-605a2cc54d11",
+      "name": "Langfuse Trace",
+      "alwaysOutputData": true,
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "liyxBzpnpKqT0tkl",
+          "name": "Langfuse"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "790ec962-091f-4db1-a452-4aef4116a952",
+              "name": "output",
+              "value": "={{ $('Finalize + Build Trace').first().json.output }}",
+              "type": "string"
+            },
+            {
+              "id": "3412d162-2741-4a35-a139-c79da922248c",
+              "name": "routed_to",
+              "value": "={{ $('Finalize + Build Trace').first().json.agent }}",
+              "type": "string"
+            },
+            {
+              "id": "4d5afe59-7a8a-475c-a0bb-15a305262ae5",
+              "name": "latency_ms",
+              "value": "={{ $('Finalize + Build Trace').first().json.latencyMs }}",
+              "type": "number"
+            },
+            {
+              "id": "1589be56-dc27-4b0d-b1a2-10dcc955cfdd",
+              "name": "=testId",
+              "value": "={{ $('Finalize + Build Trace').first().json.testId }}",
+              "type": "string"
+            },
+            {
+              "id": "a508b1af-6256-4338-9e1e-4f7f11792562",
+              "name": "intent",
+              "value": "={{ $('Finalize + Build Trace').first().json.intent }}",
+              "type": "string"
+            },
+            {
+              "id": "e1705874-298c-43f1-8959-d3c39e3ac4a8",
+              "name": "input",
+              "value": "={{ $('Finalize + Build Trace').first().json.input }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2352,
+        560
+      ],
+      "id": "3140a9e9-df0d-4ce4-8f7f-6bd7fd97735c",
+      "name": "Return Reply"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "mira",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        -112,
+        800
+      ],
+      "id": "2d693311-ef86-4e5c-93c2-de0f1ea464e9",
+      "name": "Webhook",
+      "webhookId": "64b66811-a5b1-45ba-86f9-7dd37125ca11"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Route by Intent": {
+      "main": [
+        [
+          {
+            "node": "Planner Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Risk Assessor Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Status Reporter Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Milestone Tracker Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stakeholder Update Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Clarify Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Planner Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Risk Assessor Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Status Reporter Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Milestone Tracker Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Stakeholder Update Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Planner Agent": {
+      "main": [
+        [
+          {
+            "node": "Finalize + Build Trace",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Risk Assessor Agent": {
+      "main": [
+        [
+          {
+            "node": "Finalize + Build Trace",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Status Reporter Agent": {
+      "main": [
+        [
+          {
+            "node": "Finalize + Build Trace",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Milestone Tracker Agent": {
+      "main": [
+        [
+          {
+            "node": "Finalize + Build Trace",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stakeholder Update Agent": {
+      "main": [
+        [
+          {
+            "node": "Finalize + Build Trace",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clarify Reply": {
+      "main": [
+        [
+          {
+            "node": "Finalize + Build Trace",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chat Trigger": {
+      "main": [
+        [
+          {
+            "node": "Request Intake",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request Intake": {
+      "main": [
+        [
+          {
+            "node": "Input Hygiene",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input Hygiene": {
+      "main": [
+        [
+          {
+            "node": "Build Context (ingest + stats)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Context (ingest + stats)": {
+      "main": [
+        [
+          {
+            "node": "Orchestrator (Router)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Router Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Orchestrator (Router)",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Orchestrator (Router)": {
+      "main": [
+        [
+          {
+            "node": "Parse Router Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Router Output": {
+      "main": [
+        [
+          {
+            "node": "Route by Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize + Build Trace": {
+      "main": [
+        [
+          {
+            "node": "Langfuse Trace",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Langfuse Trace": {
+      "main": [
+        [
+          {
+            "node": "Return Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Request Intake",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "e33a6de9-41f2-492a-910d-cab77798301a",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "962638f588f41199c0efd16760c28eacbfaf2ee2b2e18e838d081371e600435e"
+  },
+  "nodeGroups": [],
+  "id": "o3tS1u8XRph7qBFo",
+  "tags": []
+}
